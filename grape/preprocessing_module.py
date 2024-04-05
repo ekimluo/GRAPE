@@ -15,7 +15,7 @@ import os
 
 # Create a Participant class to store all attributes and methods for single participant
 class Participant:
-    def __init__(self, pid, filepath):
+    def __init__(self, pid, filepath, **kwargs):
         # Basic attributes
         self.pid = pid
         self.filepath = filepath
@@ -62,9 +62,25 @@ class Participant:
         self.fig_postica_psd = None
         self.fig_postica = None
         
+        self.kwargs = kwargs
+        
+    def __check_verbosity(self,kwargs):
+        v = kwargs.get("v",
+                       kwargs.get("verbose",
+                                  self.kwargs.get("v",
+                                                  self.kwargs.get("verbose",20))))
+        # Match MNE verbosity settings
+        if isinstance(v,str):
+            v = {"debug":10,"info":20,"warning":30,"error":40,"critical":50}.get(v.lower(),20)
+        elif isinstance(v,bool):
+            v = 20 if v else 30
+        return v
+        
     def load_data(self, montage = 'GSN-HydroCel-128', channel_types = {'E127': 'eog', 'E126': 'eog', 'E17': 'eog', 'E15': 'eog', 'E21': 'eog', 'E14': 'eog', 'VREF':'misc'}):
         '''
-        Load raw EEG data from the filepath
+        Load raw EEG data from the filepath.
+        
+        NOTE: Needs to be removed. The code is too use-case specific, user-written functions should prepare data to be added via add_raw_data method. 
         '''
         mff_file = os.path.join(self.filepath, f'{self.pid}.mff')
         self.raw_data = mne.io.read_raw_egi(mff_file, preload=True)
@@ -74,17 +90,43 @@ class Participant:
         self.raw_data.set_montage(montage)
         return self.raw_data
     
-    def filter_data(self, highpass = 0.1, lowpass = 40):
-        '''
-        Filter raw data
-        '''
-        self.filtered_data = self.raw_data.copy().filter(highpass, lowpass)
+    def add_raw_data(self,raw_data):
+        """Assign raw_data to this participant. 
+        The raw_data should be an instance of RawEGI. 
+        See the mne documentation (mne.io.Raw) for attributes and methods.
+
+        Args:
+            raw_data (raw): instance of RawEGI.
+
+        Returns:
+            raw: RawEGI instance that has been added to the object as raw_data. 
+        """
+        self.raw_data = raw_data
+        return self.raw_data
+    
+    def filter_data(self, highpass = 0.1, lowpass = 40, **kwargs):
+        """Filter the participant's raw data. 
+
+        Args:
+            highpass (float, optional): High-pass cutoff frequency. Defaults to 0.1.
+            lowpass (int, optional): Low-pass cutoff frequency. Defaults to 40.
+
+        Returns:
+            raw: RawEGI instance corresponding to filtered data. 
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity.
+        
+        self.filtered_data = self.raw_data.copy().filter(highpass, lowpass, verbose=v)
         return self.filtered_data
     
-    def find_bad_channels(self, exclude_from_bad = ['STRT', 'fixc', 'resp', 'STI 014', 'stim', 'VREF']):
-        '''
-        Identify bad channels using ISD.
-        '''
+    def find_bad_channels(self, exclude_from_bad = ['STRT', 'fixc', 'resp', 'STI 014', 'stim', 'VREF'],**kwargs):
+        """Identify bad channels using ISD.
+
+        Args:
+            exclude_from_bad (list, optional): Channel names to exclude from the search for bad channels. Defaults to ['STRT', 'fixc', 'resp', 'STI 014', 'stim', 'VREF'].
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity.
+        
         eeg_data = self.filtered_data.get_data()
         # Compute the standard deviation for each channel
         std = eeg_data.std(axis=1)
@@ -109,16 +151,23 @@ class Participant:
                 self.bad_channels.append(j)
         
         self.bad_channels_names = [self.filtered_data.ch_names[i] for i in self.bad_channels if self.filtered_data.ch_names[i] not in exclude_from_bad]
-        return 'There are {} bad channels found using automated bad channel detection for subject {}'.format(len(self.bad_channels_names), self.pid)
+        if v<30:
+            print('There are {} bad channels found using automated bad channel detection for subject {}'.format(len(self.bad_channels_names), self.pid))
 
-    def remove_bad_channels(self, bad_channels_names = None, exclusion_thresh = 0.75):
-        '''
-        Remove bad channels
-        ''' 
+    def remove_bad_channels(self, bad_channels_names = None, exclusion_thresh = 0.75, **kwargs):
+        """Remove bad channels.
+
+        Args:
+            bad_channels_names (list, string, optional): Names of bad channels. Defaults to None.
+            exclusion_thresh (float, optional): Fraction of channels that can be excluded before an error is thrown. Defaults to 0.75.
+
+        Raises:
+            ValueError: An error is raised if the fraction of bad channels removed exceeds the exclusion_threshold. 
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity.
         # Channels to exclude from bad channel detection
         if bad_channels_names is None:
             bad_channels_names = self.bad_channels_names
-        self.no_bads_data = self.filtered_data.copy().drop_channels(self.bad_channels_names)
         self.no_bads_data = self.filtered_data.copy().drop_channels(self.bad_channels_names)
     
         # Check if total bad channels exceeds threshold for participant exclusion in %
@@ -127,33 +176,57 @@ class Participant:
         if total_bads > exclusion_thresh * total_channels:
             raise ValueError(f'More than {exclusion_thresh * 100}% bad channels found for subject {self.pid}. Please check the data.')
         
-        return '{} bad channels were removed for subject {}'.format(len(self.bad_channels_names), self.pid)
+        if v<30:
+            print('{} bad channels were removed for subject {}'.format(len(self.bad_channels_names), self.pid))
     
-    def fit_ica(self, data = None, resamp_sfreq = 250.0, ncomps=15, method=['infomax', 'fastica', 'picard']):
-        '''
-        Fit ICA to filtered data excluding bad channels
-        '''
+    def fit_ica(self, data = None, resamp_sfreq = 250.0, ncomps=15, method=['infomax', 'fastica', 'picard'],**kwargs):
+        """Fit ICA to filtered data excluding bad channels. 
+        See mne.preprocessing.ICA for documentation of the algorithm. 
+
+        Args:
+            data (raw, optional): RawEGI instance representing data to fit ICA to. If None, self.no_bads_data is used. Defaults to None.
+            resamp_sfreq (float, optional): Resampling frequency for data. Defaults to 250.0.
+            ncomps (int, optional): Number of components (passed to ICA algorithm). Defaults to 15.
+            method (list, optional): Methods to use in ICA fitting (passed to ICA algorithm).. Defaults to ['infomax', 'fastica', 'picard'].
+
+        Returns:
+            ica: ICA instance. 
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity.
+        
         if data is None:
             data = self.no_bads_data.copy()
         
         # Downsample data to 250 Hz for memory efficiency
-        data.resample(sfreq=resamp_sfreq)
+        data.resample(sfreq=resamp_sfreq,verbose=v,**kwargs)
 
-        self.ica = ICA(n_components=ncomps, random_state=42, method=method)
-        self.ica.fit(data)
+        self.ica = ICA(n_components=ncomps, random_state=42, method=method, verbose=v, **kwargs)
+        self.ica.fit(data,verbose=v,**kwargs)
 
         return self.ica
 
-    def find_bad_ica(self, data = None, sfreq=500.0, highpass=0.1, lowpass=40, rej_thresh=2, eog_channels=['E127','E126','E17','E15','E21','E14']):
-        '''
-        Find bad ICA components using FASTER
-        '''
+    def find_bad_ica(self, data = None, sfreq=500.0, highpass=0.1, lowpass=40, rej_thresh=2.0, 
+                     eog_channels=['E127','E126','E17','E15','E21','E14'],
+                     **kwargs):
+        """Find bad ICA components using FASTER. 
+        Can supply kwargs to pass to the Hurst exponent algorithm: see the documentation for nolds.hurst_rs(). 
+
+        Args:
+            data (raw, optional): RawEGI instance representing data to fit ICA to. If None, self.no_bads_data is used. Defaults to None.
+            sfreq (float, optional): _description_. Defaults to 500.0.
+            highpass (float, optional): High-pass cutoff frequency for filter band slope calculation. Defaults to 0.1.
+            lowpass (int, optional): Low-pass cutoff frequency for filter band slope calculation. Defaults to 40.
+            rej_thresh (float, optional): Rejection threshold for FASTER. Defaults to 2.0.
+            eog_channels (list, string, optional): EOG channel names. Defaults to ['E127','E126','E17','E15','E21','E14'].
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity.
+        
         if data is None:
             data = self.no_bads_data.copy()
 
         # Get ICA scores
-        self.ica_sources = self.ica.get_sources(data)
-        self.ica_scores = self.ica_sources.get_data()
+        self.ica_sources = self.ica.get_sources(data,**kwargs)
+        self.ica_scores = self.ica_sources.get_data(verbose=v,**kwargs)
 
         # Check if any of the EOG channels exist
         eog_avail = True
@@ -163,8 +236,8 @@ class Participant:
             eog_avail = False
         else:
             # Correlate ICA scores with EOG channels
-            eog_data = data.copy().pick_channels(eog_channels)
-            self.eog_scores = eog_data.get_data()[0]
+            eog_data = data.copy().pick(avail_eogs,verbose=v,**kwargs)
+            self.eog_scores = eog_data.get_data(verbose=v,**kwargs)[0]
 
             cor_eog = np.corrcoef(self.ica_scores, self.eog_scores)
             zscore_eog = zscore(cor_eog)
@@ -175,12 +248,12 @@ class Participant:
         zscore_kurtosis = zscore(kurtosis_vals)
 
         # Calculate filter band slope
-        ica_psd, freqs = mne.time_frequency.psd_array_welch(self.ica_scores, fmin=highpass, fmax=lowpass, sfreq=sfreq)
+        ica_psd, freqs = mne.time_frequency.psd_array_welch(self.ica_scores, fmin=highpass, fmax=lowpass, sfreq=sfreq, verbose=v, **kwargs)
         slope = [np.mean(np.gradient(psd)) for psd in ica_psd]
         zscore_slope = zscore(slope)
 
         # Calculate the Hurst exponent for each ICA component
-        hurst_values = [nolds.hurst_rs(score) for score in self.ica_scores]
+        hurst_values = [nolds.hurst_rs(score,**kwargs) for score in self.ica_scores]
         zscore_hurst = zscore(hurst_values)
 
         # Calculate median gradient
@@ -201,43 +274,73 @@ class Participant:
                 conditions.append(abs(zscore_eog[i, 0]) > rej_thresh)
             if any(conditions):
                 self.ica_bads.append(name)
-        return 'There are {} bad ICA components for subject {}'.format(len(self.ica_bads), self.pid)
+        if v<30:
+            print('There are {} bad ICA components for subject {}'.format(len(self.ica_bads), self.pid))
         
-    def remove_bad_ica(self, ica_bads = None):
-        '''
-        Remove bad ICA components
-        '''
-        if self.ica_bads is None:
-            self.ica_bads = self.ica_bads
+    def remove_bad_ica(self, ica_bads = None, **kwargs):
+        """Remove bad ICA components.
 
-        self.ica_bads_idx = [self.ica_sources.info['ch_names'].index(i) for i in self.ica_bads]
+        Args:
+            ica_bads (list, optional): List of bad ICA components. If None, uses self.ica_bads. Defaults to None.
+
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity.
+        
+        if ica_bads is None:
+            ica_bads = self.ica_bads
+
+        self.ica_bads_idx = [self.ica_sources.info['ch_names'].index(i) for i in ica_bads]
         self.ica.exclude = self.ica_bads_idx
 
-        return '{} bad ICA components removed for subject {}'.format(len(self.ica_bads_idx), self.pid)
+        if v<30:
+            print('{} bad ICA components removed for subject {}'.format(len(self.ica_bads_idx), self.pid))
     
-    def apply_ica(self, data = None, exclude = None):
-        '''
-        Apply ICA to filtered data excluding bad channels
-        '''
+    def apply_ica(self, data = None, exclude = None, **kwargs):
+        """Apply ICA to filtered data excluding bad channels
+
+        Args:
+            data (raw, optional): RawEGI instance. If None, uses self.no_bads_data. Defaults to None.
+            exclude (list, optional): Bad channels to exclude. If None, self.ica.exclude is extended using self.ica_bads_idx, and the resulting list is used. Defaults to None.
+
+        Returns:
+            Raw, Epochs or Evoked: Processed data
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity.
+        
         if data is None:
             data = self.no_bads_data.copy()
         if exclude is None:
             self.ica.exclude.extend(self.ica_bads_idx)
             exclude = self.ica.exclude
-        self.postica_data = self.ica.apply(data, exclude = exclude)
+        self.postica_data = self.ica.apply(data, exclude = exclude, verbose=v,**kwargs)
         return self.postica_data
     
-    def create_epochs(self, data = None, stim_channel = 'stim', tmin = -0.2, tmax = 1.2, reject = dict(eeg = 75e-4), baseline = (-0.2, 0)):
-        '''
-        Create epochs from cleaned data.
-        '''
+    def create_epochs(self, data = None, stim_channel = 'stim', tmin = -0.2, tmax = 1.2, reject = dict(eeg = 75e-4), baseline = (-0.2, 0), **kwargs):
+        """Create epochs from cleaned data. 
+        
+        The stim_channel arg is supplied to mne.find_events, and the others args are supplied to mne.Epochs. 
+        See the relevant mne documentaton for details.
+
+        Args:
+            data (_type_, optional): cleaned data. If None, self.postica_data is used. Defaults to None.
+            stim_channel (str, optional): String specifying the stim channel. See mne.find_events documentation for details. Defaults to 'stim'.
+            tmin (float, optional): Minimum time cutoff. Defaults to -0.2.
+            tmax (float, optional): Maximum time cutoff. Defaults to 1.2.
+            reject (dict, optional): Dictionary of rejection thresholds. Defaults to dict(eeg = 75e-4).
+            baseline (tuple, optional): Baseline values. Defaults to (-0.2, 0).
+
+        Returns:
+            Epochs: mne.Epochs instance of epochs created by this function. 
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity
+        
         if data is None:
             data = self.postica_data.copy()
         
-        self.events = mne.find_events(data, verbose = False, stim_channel = stim_channel)
+        self.events = mne.find_events(data, stim_channel = stim_channel, verbose=v, **kwargs)
         self.event_id = np.unique(self.events[:, 2])[0]
         self.events = self.events[self.events[:, 2] == self.event_id]
-        self.epochs = mne.Epochs(data, events=self.events, event_id=self.event_id, tmin=tmin, tmax=tmax, baseline=baseline, reject=reject, preload=True)
+        self.epochs = mne.Epochs(data, events=self.events, event_id=self.event_id, tmin=tmin, tmax=tmax, baseline=baseline, reject=reject, preload=True, verbose=v, **kwargs)
         
         # Calculate epoch dropped percentage
         self.total_epochs = len(self.epochs.drop_log)
@@ -245,21 +348,36 @@ class Participant:
         self.perc_dropped = self.dropped_epochs / self.total_epochs * 100
 
         # Reference epochs to average reference
-        self.epochs.set_eeg_reference('average')
+        self.epochs.set_eeg_reference('average',verbose=v,**kwargs)
         return self.epochs
     
-    def create_evoked(self, comp_channels):
-        '''
-        Create evoked data from epochs.
-        '''
-        epochs_comp = self.epochs.copy().pick_channels(comp_channels)
+    def create_evoked(self, comp_channels, **kwargs):
+        """Create evoked data from epochs.
+
+        Args:
+            comp_channels (list, string): A list of channel names to pick out. 
+
+        Returns:
+            EvokedArray: evoked data. 
+        """
+        v = self.__check_verbosity(kwargs) # Print-output verbosity
+        
+        avail_channels = [ch for ch in comp_channels if ch in self.epochs.ch_names]
+        
+        epochs_comp = self.epochs.copy().pick(avail_channels,verbose=v,**kwargs)
         evoked = epochs_comp.average()
         return evoked
     
     def find_peaks(self, evoked, tw = [0.2, 0.3]):
-        '''
-        Find the peak amplitude and latency in the time window for the component.
-        '''
+        """Find the peak amplitude and latency in the time window for the component.
+
+        Args:
+            evoked (EvokedArray): evoked data to finds peaks in. 
+            tw (list, float, optional): Time window to use. Defaults to [0.2, 0.3].
+
+        Returns:
+            tuple, float: Values corresponding to the amplitude peak and latency peak. 
+        """
         if evoked is None:
             evoked = self.evoked.copy()
 
@@ -275,9 +393,14 @@ class Participant:
         return self.amplitude_peak, self.latency_peak
     
     def generate_plots(self, data=None, data_title='Filtered', scalings=dict(eeg=300e-6), show=True):
-        '''
-        Generate plots for data at each preprocessing stage.
-        '''
+        """Generate plots for data at each preprocessing stage.
+
+        Args:
+            data (raw, optional): Data to plot. If None, self.filtered_data is used. Defaults to None.
+            data_title (str, optional): Named of data - used as plot title. Defaults to 'Filtered'.
+            scalings (dict, optional): Dictionary of scalings to use. Defaults to dict(eeg=300e-6).
+            show (bool, optional): Whether to show the plots that are produced. Defaults to True.
+        """
         if data is None:
             data = self.filtered_data.copy()
 

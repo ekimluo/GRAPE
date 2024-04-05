@@ -11,13 +11,13 @@ import mne
 import pandas as pd
 import os
 
-pid = '052'
+pid = '002'
 data_dir = '../data'
 
 rejection_df = pd.DataFrame(columns=['pid', 'total_epochs', 'dropped_epochs', 'perc_dropped'])
 amplitude_latency_df = pd.DataFrame(columns=['pid', 'component', 'amplitude_peak', 'latency_peak'])
 
-cleaned_data_dir = 'Data/02_EEG_cleaned'
+cleaned_data_dir = 'cleaned_data'
 cleaned_data = 'amplitude_latency_metrics.csv'
 rejection_data = 'rejection_metrics.csv'
 
@@ -53,8 +53,28 @@ time_window_N2 = [0.2, 0.3]
 time_window_P3 = [0.35, 0.45]
 time_window_LPP = [0.5, 0.8]
 
-p = Participant(pid, data_dir)
-p.load_data()
+# Load in data for this participant. 
+def load_data(pid, data_dir,
+              montage = 'GSN-HydroCel-128', 
+              channel_types = {'E127': 'eog', 'E126': 'eog', 'E17': 'eog', 'E15': 'eog', 'E21': 'eog', 'E14': 'eog', 'VREF':'misc'}):
+    '''
+    Load raw EEG data from the filepath
+    '''
+    mff_file = os.path.join(data_dir, f'{pid}.mff')
+    raw_data = mne.io.read_raw_egi(mff_file, preload=True, verbose=0)
+    # Set channel types
+    raw_data.set_channel_types(channel_types)    
+    # Set montage
+    raw_data.set_montage(montage)
+    return raw_data
+
+my_data = load_data(pid,data_dir)
+
+# Set verbose="WARNING" to see less output from each method. 
+p = Participant(pid, data_dir, verbose="INFO")
+
+out = p.add_raw_data(my_data)
+
 p.filter_data()
 p.find_bad_channels()
 p.remove_bad_channels()
@@ -83,48 +103,28 @@ amp_p3, lat_p3 = p.find_peaks(evoked_p3, time_window_P3)
 amp_lpp, lat_lpp = p.find_peaks(evoked_lpp, time_window_LPP)
 
 # Append rejection metrics to DataFrame
-rejection_df = rejection_df.append({
-    'pid': pid,
-    'total_epochs': p.total_epochs,
-    'dropped_epochs': p.dropped_epochs,
-    'perc_dropped': p.perc_dropped
-}, ignore_index=True)
+new_metrics = pd.DataFrame(
+    {'pid': pid,
+     'total_epochs': p.total_epochs,
+     'dropped_epochs': p.dropped_epochs,
+     'perc_dropped': p.perc_dropped},
+    index=[0])
+
+rejection_df = pd.concat([rejection_df.astype(new_metrics.dtypes),
+                          new_metrics], ignore_index=True)
 
 # Append amplitude and latency metrics to DataFrame for all components
-amplitude_latency_df_n1 = amplitude_latency_df.append({
-    'pid': pid,
-    'component': 'N1',
-    'amplitude_peak': amp_n1,
-    'latency_peak': lat_n1
-}, ignore_index=True)
+new_metrics = pd.DataFrame(
+    {'pid': [pid,pid,pid,pid],
+     'component': ['N1','N2','P3','LPP'],
+     'amplitude_peak': [amp_n1,amp_n2,amp_p3,amp_lpp],
+     'latency_peak': [lat_n1,lat_n2,lat_p3,lat_lpp]},)
 
-amplitude_latency_df_n2 = amplitude_latency_df.append({
-    'pid': pid,
-    'component': 'N2',
-    'amplitude_peak': amp_n2,
-    'latency_peak': lat_n2
-}, ignore_index=True)
+amplitude_latency_df = pd.concat([amplitude_latency_df.astype(new_metrics.dtypes),
+                                  new_metrics],ignore_index=True)
 
-amplitude_latency_df_p3 = amplitude_latency_df.append({
-    'pid': pid,
-    'component': 'P3',
-    'amplitude_peak': amp_p3,
-    'latency_peak': lat_p3
-}, ignore_index=True)
-
-amplitude_latency_df_lpp = amplitude_latency_df.append({
-    'pid': pid,
-    'component': 'LPP',
-    'amplitude_peak': amp_lpp,
-    'latency_peak': lat_lpp
-}, ignore_index=True)
-
-# Combine amplitude and latency metrics DataFrames
-amplitude_latency_df = pd.concat([amplitude_latency_df_n1, amplitude_latency_df_n2, amplitude_latency_df_p3, amplitude_latency_df_lpp])
-amplitude_latency_df.to_csv('~/Desktop/' + pid + '.csv', header = True, index = False)
-print(pid)
 # Export DataFrames to csv
-rejection_df.to_csv('Data/02_EEG_cleaned/rejection_metrics.csv', mode = 'a', header = True, index=False)
-amplitude_latency_df.to_csv('Data/02_EEG_cleaned/amplitude_latency_metrics.csv', mode = 'a', header = False, index=False)
+rejection_df.to_csv(rejection_file_path, mode = 'a', header = True, index=False)
+amplitude_latency_df.to_csv(cleaned_file_path, mode = 'a', header = False, index=False)
 
 print('Participant ' + pid + ' processed.')

@@ -8,6 +8,7 @@
 import sys
 sys.path.append("..")
 from grape.preprocessing_module import Participant
+import mne
 import pandas as pd
 import os
 from copy import copy
@@ -29,7 +30,7 @@ if not os.path.exists('amplitude_latency_metrics.csv'):
     amplitude_latency_df.to_csv('amplitude_latency_metrics.csv', index=False)
 
 # Define the directory and participant files
-data_dir = 'Data/01_EEG_raw'
+data_dir = 'Data/01_EEG_raw' # List your own directory here. 
 participant_files = [f for f in os.listdir(data_dir) if f.endswith('.mff')]
 
 # Define channels for each region
@@ -52,13 +53,30 @@ time_window_N2 = [0.2, 0.3]
 time_window_P3 = [0.35, 0.45]
 time_window_LPP = [0.5, 0.8]
 
+# Load in data for a participant. 
+def load_data(pid, data_dir,
+              montage = 'GSN-HydroCel-128', 
+              channel_types = {'E127': 'eog', 'E126': 'eog', 'E17': 'eog', 'E15': 'eog', 'E21': 'eog', 'E14': 'eog', 'VREF':'misc'}):
+    '''
+    Load raw EEG data from the filepath
+    '''
+    mff_file = os.path.join(data_dir, f'{pid}.mff')
+    raw_data = mne.io.read_raw_egi(mff_file, preload=True, verbose=0)
+    # Set channel types
+    raw_data.set_channel_types(channel_types)    
+    # Set montage
+    raw_data.set_montage(montage)
+    return raw_data
+
 for pid in participant_files:
     pid = pid.split('.')[0]
-    p = Participant(pid, data_dir)
+    p = Participant(pid, data_dir, verbose="WARNING") # Set verbose="INFO" to see more output
 
     try:
         # Load and preprocess data
-        p.load_data()
+        my_data = load_data(pid,data_dir)
+        p.add_raw_data(my_data)
+        
         p.filter_data()
         p.find_bad_channels()
         p.remove_bad_channels()
@@ -89,44 +107,25 @@ for pid in participant_files:
             print(f'Error processing participant {pid}: {e}')
     
     # Append rejection metrics to lists
-    rejection_metrics.append({
-        'pid': pid,
-        'total_epochs': p.total_epochs,
-        'dropped_epochs': p.dropped_epochs,
-        'perc_dropped': p.perc_dropped
-    })
+    rejection_metrics.append(pd.DataFrame(
+        {'pid': pid,
+         'total_epochs': p.total_epochs,
+         'dropped_epochs': p.dropped_epochs,
+         'perc_dropped': p.perc_dropped},
+        index=[0]))
 
     # Append amplitude and latency metrics to lists for all components
-    amplitude_latency_metrics.extend([
-        {
-            'pid': pid,
-            'component': 'N1',
-            'amplitude_peak': amp_n1,
-            'latency_peak': lat_n1
-        },
-        {
-            'pid': pid,
-            'component': 'N2',
-            'amplitude_peak': amp_n2,
-            'latency_peak': lat_n2
-        },
-        {
-            'pid': pid,
-            'component': 'P3',
-            'amplitude_peak': amp_p3,
-            'latency_peak': lat_p3
-        },
-        {
-            'pid': pid,
-            'component': 'LPP',
-            'amplitude_peak': amp_lpp,
-            'latency_peak': lat_lpp
-        }
-    ])
+    amplitude_latency_metrics.append(pd.DataFrame(
+        {'pid': [pid,pid,pid,pid],
+         'component': ['N1','N2','P3','LPP'],
+         'amplitude_peak': [amp_n1,amp_n2,amp_p3,amp_lpp],
+         'latency_peak': [lat_n1,lat_n2,lat_p3,lat_lpp]},))
+    
+    print('\nParticipant ' + pid + ' processed.\n')
 
 # Convert the lists to DataFrames
-rejection_df = pd.DataFrame(rejection_metrics)
-amplitude_latency_df = pd.DataFrame(amplitude_latency_metrics)
+rejection_df = pd.concat(rejection_metrics)
+amplitude_latency_df = pd.concat(amplitude_latency_metrics)
 
 # Save the DataFrames to CSV, outside of the loop
 rejection_df.to_csv('Data/02_EEG_cleaned/rejection_metrics.csv', index=False)
